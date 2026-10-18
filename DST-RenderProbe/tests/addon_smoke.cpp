@@ -80,6 +80,7 @@ int main(int argc, char **argv) {
     REQUIRE(!indexed(nullptr, 3, 1, 0, 0, 0));
     present(nullptr);
     REQUIRE(!messages.empty() && messages.back().find("frame=1 draws=2 target=1 skip=OFF") != std::string::npos);
+    REQUIRE(messages.back().find("counted_target=1 hits=1 skip_requests=0") != std::string::npos);
     REQUIRE(!draw(nullptr, 6, 1, 0, 0));
     present(nullptr);
     REQUIRE(messages.back().find("frame=2 draws=1 target=1 skip=OFF") != std::string::npos);
