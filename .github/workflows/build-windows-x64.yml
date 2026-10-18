@@ -1,0 +1,82 @@
+name: Build DST Render Probe (Windows x64)
+
+on:
+  push:
+    paths:
+      - 'DST-RenderProbe/**'
+      - '.github/workflows/build-windows-x64.yml'
+  pull_request:
+    paths:
+      - 'DST-RenderProbe/**'
+      - '.github/workflows/build-windows-x64.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout pinned ReShade SDK (v6.6.2, API 18)
+        uses: actions/checkout@v4
+        with:
+          repository: crosire/reshade
+          ref: 7d13ead8f630d045b9e7e2ac2ce18b2e7e5b25c3
+          path: _deps/reshade
+          persist-credentials: false
+      - name: Configure MSVC x64 Release
+        run: cmake -S DST-RenderProbe -B build -G "Visual Studio 17 2022" -A x64 "-DRESHADE_INCLUDE_DIR=$env:GITHUB_WORKSPACE/_deps/reshade/include" -DBUILD_TESTING=ON
+      - name: Compile add-on and simulated host
+        run: cmake --build build --config Release --parallel
+      - name: Test DLL loading and passive callbacks (simulated host)
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Verify PE architecture, exports and dependencies
+        run: python DST-RenderProbe/scripts/verify_pe.py build/Release/DSTRenderProbe.addon64
+      - name: Package with build provenance and SHA256
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/Release/DSTRenderProbe.addon64 dist/
+          Copy-Item DST-RenderProbe/README.md dist/
+          Copy-Item DST-RenderProbe/docs/AGENT_TASKS.md dist/
+          $info = [ordered]@{
+            repository = $env:GITHUB_REPOSITORY
+            source_sha = $env:GITHUB_SHA
+            source_ref = $env:GITHUB_REF
+            reshade_sdk_tag = 'v6.6.2'
+            reshade_sdk_sha = '7d13ead8f630d045b9e7e2ac2ce18b2e7e5b25c3'
+            reshade_api_version = 18
+            architecture = 'AMD64'
+            configuration = 'Release, static MSVC runtime'
+            run_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+            simulated_host_test = 'passed'
+            game_test = 'not performed'
+          }
+          $info | ConvertTo-Json | Set-Content -Encoding utf8 dist/build-info.json
+          Get-ChildItem dist -File | Sort-Object Name | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower(), $_.Name
+          } | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+      - name: Upload tested Windows x64 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSTRenderProbe-Windows-x64-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload test diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-${{ github.run_id }}
+          path: |
+            build/Testing/Temporary/
+            build/CMakeFiles/CMakeConfigureLog.yaml
+          if-no-files-found: ignore
