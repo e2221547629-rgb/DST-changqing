@@ -60,7 +60,7 @@ jobs:
             reshade_sdk_sha = '7d13ead8f630d045b9e7e2ac2ce18b2e7e5b25c3'
             reshade_api_version = 18
             architecture = 'AMD64'
-            probe_version = '0.3'
+            probe_version = '0.4'
             configuration = 'Release, static MSVC runtime'
             run_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
             simulated_host_test = 'passed'

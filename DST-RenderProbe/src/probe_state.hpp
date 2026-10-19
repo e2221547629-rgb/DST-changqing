@@ -3,7 +3,7 @@
 #include <cstdint>
 
 namespace dst_probe {
-enum Key : uint32_t { F7 = 1, F8 = 2, F9 = 4, F10 = 8, F11 = 16, F6 = 32 };
+enum Key : uint32_t { F7 = 1, F8 = 2, F9 = 4, F10 = 8, F11 = 16, F6 = 32, F5 = 64 };
 struct Input { bool foreground = false; uint32_t keys = 0; bool shift = false; };
 struct Frame { uint32_t draws, hits, requests, counted_target; };
 
@@ -54,11 +54,11 @@ public:
             repeat_key_ = 0;
             return "reset";
         }
-        if (pressed & F6) {
+        if (pressed & (F5 | F6)) {
             single_.store(false, std::memory_order_relaxed);
             burst_until_.store(0, std::memory_order_relaxed);
             repeat_key_ = 0;
-            return "capture_request";
+            return (pressed & F5) ? "texture_request" : "capture_request";
         }
         const char *reason = nullptr;
         if (burst_until() != 0 && now >= burst_until()) {

@@ -3,6 +3,8 @@
 #include <windows.h>
 #include "../src/d3d9_capture.hpp"
 #include <cstdio>
+#include <sstream>
+#include "../src/texture_dump.hpp"
 using namespace dst_probe;
 #define CHECK(condition) do { if (!(condition)) { \
     std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #condition); return 1; } } while (false)
@@ -49,6 +51,32 @@ int main() {
     DrawInfo unbound;
     read_d3d9_state(device.value, unbound);
     CHECK(unbound.textures[0].id == 0);
+    ComRef<IDirect3DTexture9> bc3;
+    CHECK(SUCCEEDED(device.value->CreateTexture(8, 8, 1, 0, D3DFMT_DXT5, D3DPOOL_MANAGED, &bc3.value, nullptr)));
+    D3DLOCKED_RECT write{};
+    CHECK(SUCCEEDED(bc3.value->LockRect(0, &write, nullptr, 0)));
+    for (int block_row = 0; block_row < 2; ++block_row)
+        for (int col = 0; col < 32; ++col)
+            static_cast<uint8_t *>(write.pBits)[block_row * write.Pitch + col] = static_cast<uint8_t>(block_row * 32 + col);
+    CHECK(SUCCEEDED(bc3.value->UnlockRect(0)));
+    CHECK(SUCCEEDED(device.value->SetTexture(0, bc3.value)));
+    std::vector<uint8_t> bytes;
+    CHECK(SUCCEEDED(read_bc3(bc3.value, bytes)) && bytes.size() == 64);
+    for (size_t i = 0; i < bytes.size(); ++i) CHECK(bytes[i] == i);
+    ComRef<IDirect3DBaseTexture9> still_bound;
+    CHECK(SUCCEEDED(device.value->GetTexture(0, &still_bound.value)) && still_bound.value == bc3.value);
+    CHECK(SUCCEEDED(bc3.value->LockRect(0, &write, nullptr, 0))); // Reader released its lock.
+    static_cast<uint8_t *>(write.pBits)[0] = 123;
+    CHECK(SUCCEEDED(bc3.value->UnlockRect(0)));
+    CHECK(SUCCEEDED(read_bc3(bc3.value, bytes)) && bytes[0] == 123);
+    std::ostringstream dds(std::ios::binary);
+    write_bc3_dds(dds, 8, 8, bytes);
+    CHECK(dds.str().size() == 128 + 64 && dds.str().substr(0,4) == "DDS ");
+    CHECK(std::memcmp(dds.str().data() + 128, bytes.data(), bytes.size()) == 0);
+    CHECK(FAILED(read_bc3(texture.value, bytes)) && bytes.empty()); // Non-BC3 rejected.
+    CHECK(read_bc3(nullptr, bytes) == E_POINTER && bytes.empty());
+    CHECK(SUCCEEDED(device.value->SetTexture(0, nullptr)));
+    std::puts("PASS: read-only BC3 bytes, DDS payload, binding preservation, unlock and invalid inputs.");
     std::puts("PASS: native D3D9 texture identity/dimensions/format, viewport, render target and unbinding.");
     return 0;
 }

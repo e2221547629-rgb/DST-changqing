@@ -68,6 +68,12 @@ int main() {
     state.finish_frame();
     uint32_t ordinal = 0;
     CHECK(!state.draw(1515, &ordinal) && ordinal == 1);
+    state.update(1516, {true, F8}, 1000);
+    CHECK(state.single());
+    const char *texture_reason = state.update(1517, {true, F5 | F7}, 1000);
+    CHECK(texture_reason && std::string(texture_reason) == "texture_request");
+    CHECK(!state.single() && state.burst_until() == 0);
+    CHECK(!state.update(1518, {true, F5}, 1000));
     std::puts("PASS: hit/request counts, single suppression, held keys, repeat/Shift navigation, "
               "500 ms burst, expiry without present, focus loss, reset.");
     return 0;

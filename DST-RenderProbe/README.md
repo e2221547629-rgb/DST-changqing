@@ -1,3 +1,13 @@
+# DST Render Probe v0.4
+
+F5 exports up to 16 unique slot-0 DXT5 textures of size 2048x2048 or 1024x512 during one present interval. These dimensions cover the locally inspected evergreen atlases, but are not asset identification. The export is opt-in and defaults off. F5 cancels suppression; F11 or focus loss cancels a pending collection.
+
+Files are written beside the add-on under `DSTRenderProbe-textures/textures-.../`: top-mip DDS files, `textures.csv` with session-local texture identities and per-texture HRESULTs, and `scope.txt`. A brief stall from synchronous readback and disk output is possible. A successful READONLY LockRect copies compressed rows without padding. No render state or texture content is changed. DEFAULT-pool resources may reject locking; those failures are recorded with no fabricated pixels. No offscreen-render fallback is implemented yet. A candidate can be bound but unused by a shader, and this is not an exhaustive inventory.
+
+Compare exported DDS payload SHA256 against the top-level compressed-payload hashes generated from local game TEX files. Exact bytes establish atlas content; size alone does not. Use `python scripts/match_texture_dump.py DUMP_DIR LOCAL_FINGERPRINT_JSON`. Game art stays local and must not be added to this public repository. This version does not add lighting, identify objects by name, or hide trees automatically. Test native hooks in an offline local world.
+
+The following section documents the previous metadata-capture feature and build procedure. Historical v0.3 build results do not validate v0.4 or its real-game readback.
+
 # DST Render Probe — 原生图形拦截可行性验证（实验性）
 
 **这不是已完成的光影 MOD。** 它是一个用于判定“是否能接管《饥荒联机版》逐次绘制”的最小 Windows/ReShade Add-on。首次启动仅监控，不修改画面。打开明确的测试开关后，允许按 draw-call 序号**临时跳过一条绘制命令**，观察树木、人物、UI 或其他内容是否消失。

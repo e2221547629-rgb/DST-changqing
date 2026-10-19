@@ -1,9 +1,11 @@
-// Offline diagnostics only. v0.3 adds opt-in one-frame D3D9 metadata capture.
+// Offline diagnostics only. v0.4 adds opt-in one-frame D3D9 metadata capture.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <reshade.hpp>
 #include "probe_state.hpp"
 #include "d3d9_capture.hpp"
+#include "texture_dump.hpp"
+#include <memory>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -14,7 +16,7 @@
 
 extern "C" {
 __declspec(dllexport) const char *NAME = "DST Render Probe";
-__declspec(dllexport) const char *DESCRIPTION = "v0.3: F6 captures one D3D9 frame; F7 tests draws for 500 ms.";
+__declspec(dllexport) const char *DESCRIPTION = "v0.4: F5 exports candidate BC3 textures; F6 captures frame metadata.";
 }
 
 namespace {
@@ -24,6 +26,103 @@ uint64_t g_frame = 0;
 std::mutex g_present_mutex;
 dst_probe::CaptureBuffer g_capture;
 wchar_t g_module_path[32768]{};
+
+// At most 16 candidate slot-0 textures, retained only until the next present.
+// Readback is performed outside draw callbacks and never changes GPU bindings.
+struct Candidate {
+    dst_probe::ComRef<IDirect3DTexture9> texture;
+    D3DSURFACE_DESC desc{};
+    uint32_t ordinal = 0;
+};
+std::mutex g_texture_mutex;
+std::atomic<bool> g_texture_active{false};
+reshade::api::effect_runtime *g_texture_owner = nullptr;
+reshade::api::device *g_texture_device = nullptr;
+std::vector<std::unique_ptr<Candidate>> g_candidates;
+uint64_t g_texture_sequence = 0;
+bool g_texture_truncated = false;
+void cancel_textures(reshade::api::effect_runtime *runtime) {
+    const std::lock_guard<std::mutex> lock(g_texture_mutex);
+    if (g_texture_owner != runtime) return;
+    g_texture_active.store(false);
+    g_candidates.clear(); g_texture_owner = nullptr; g_texture_device = nullptr;
+}
+void collect_texture(reshade::api::command_list *commands, uint32_t ordinal) {
+    if (!g_texture_active.load() || !commands) return;
+    try {
+        const std::lock_guard<std::mutex> lock(g_texture_mutex);
+        if (!g_texture_active.load() || commands->get_device() != g_texture_device) return;
+        const auto native = reinterpret_cast<IDirect3DDevice9 *>(static_cast<uintptr_t>(g_texture_device->get_native()));
+        if (!native) return;
+        dst_probe::ComRef<IDirect3DBaseTexture9> base;
+        if (FAILED(native->GetTexture(0, &base.value)) || !base.value || base.value->GetType() != D3DRTYPE_TEXTURE) return;
+        auto *texture = static_cast<IDirect3DTexture9 *>(base.value);
+        D3DSURFACE_DESC desc{};
+        if (FAILED(texture->GetLevelDesc(0, &desc)) || desc.Format != D3DFMT_DXT5) return;
+        if (!((desc.Width == 2048 && desc.Height == 2048) || (desc.Width == 1024 && desc.Height == 512))) return;
+        for (const auto &item : g_candidates) if (item->texture.value == texture) return;
+        if (g_candidates.size() >= 16) { g_texture_truncated = true; return; }
+        auto item = std::make_unique<Candidate>();
+        item->desc = desc; item->ordinal = ordinal;
+        texture->AddRef(); item->texture.value = texture;
+        g_candidates.push_back(std::move(item));
+    } catch (...) {
+        g_texture_active.store(false);
+        reshade::log::message(reshade::log::level::error, "DST Render Probe v0.4 [texture_collect_failed]");
+    }
+}
+void finish_textures(reshade::api::effect_runtime *runtime) {
+    const std::lock_guard<std::mutex> lock(g_texture_mutex);
+    if (g_texture_owner != runtime) return;
+    g_texture_active.store(false);
+    try {
+        if (!g_module_path[0]) throw std::runtime_error("Add-on path unavailable");
+        SYSTEMTIME time{}; GetLocalTime(&time);
+        char stem[128];
+        std::snprintf(stem, sizeof(stem), "textures-%04u%02u%02u-%02u%02u%02u-%03u-p%lu-t%llu",
+            time.wYear,time.wMonth,time.wDay,time.wHour,time.wMinute,time.wSecond,time.wMilliseconds,
+            GetCurrentProcessId(),static_cast<unsigned long long>(g_texture_sequence));
+        const auto directory = std::filesystem::path(g_module_path).parent_path() / "DSTRenderProbe-textures" / stem;
+        if (!std::filesystem::create_directories(directory)) throw std::runtime_error("Refusing existing dump directory");
+        std::ofstream report;
+        report.exceptions(std::ios::badbit | std::ios::failbit);
+        report.open(directory / "textures.csv", std::ios::binary);
+        report << "texture_id,width,height,format,pool,usage,first_draw,read_hresult,bytes,file\n";
+        size_t saved = 0;
+        for (const auto &item : g_candidates) {
+            std::vector<uint8_t> bytes;
+            const HRESULT hr = dst_probe::read_bc3(item->texture.value, bytes);
+            const auto id = dst_probe::identity(item->texture.value);
+            std::string filename;
+            if (SUCCEEDED(hr)) {
+                filename = "texture-" + std::to_string(id) + ".dds";
+                std::ofstream out;
+                out.exceptions(std::ios::badbit | std::ios::failbit);
+                out.open(directory / filename, std::ios::binary);
+                dst_probe::write_bc3_dds(out, item->desc.Width, item->desc.Height, bytes);
+                out.close(); ++saved;
+            }
+            report << id << ',' << item->desc.Width << ',' << item->desc.Height << ',' << item->desc.Format
+                   << ',' << item->desc.Pool << ',' << item->desc.Usage << ',' << item->ordinal
+                   << ',' << static_cast<uint32_t>(hr) << ',' << bytes.size() << ',' << filename << '\n';
+        }
+        report.close();
+        std::ofstream meta(directory / "scope.txt");
+        meta << "version=0.4\nslot=0\nformat=DXT5\ndimensions=2048x2048 or 1024x512\nmax_candidates=16\n"
+             << "truncated=" << g_texture_truncated << "\nsaved=" << saved
+             << "\nidentity=session-local; size alone is not an asset match"
+             << "\nread=top mip compressed rows, READONLY LockRect; no render state changes"
+             << "\nfailed LockRect means unsupported direct readback, not an asset mismatch\n";
+        meta.close();
+        const std::string message = "DST Render Probe v0.4 [textures_saved] directory=" + directory.u8string()
+            + " candidates=" + std::to_string(g_candidates.size()) + " saved=" + std::to_string(saved);
+        reshade::log::message(reshade::log::level::info, message.c_str());
+    } catch (const std::exception &error) {
+        const std::string message = std::string("DST Render Probe v0.4 [textures_failed] ") + error.what();
+        reshade::log::message(reshade::log::level::error, message.c_str());
+    }
+    g_candidates.clear(); g_texture_owner = nullptr; g_texture_device = nullptr;
+}
 
 void capture_draw(reshade::api::command_list *commands, uint32_t ordinal, bool indexed,
                   uint32_t count, uint32_t instances, uint32_t first, int32_t base,
@@ -65,7 +164,7 @@ void save_capture(reshade::api::effect_runtime *runtime, const dst_probe::Captur
         std::ofstream meta;
         meta.exceptions(std::ios::badbit | std::ios::failbit);
         meta.open(meta_path, std::ios::binary);
-        meta << "probe_version=0.3\nbackend=D3D9\nsequence=" << capture.sequence
+        meta << "probe_version=0.4\nbackend=D3D9\nsequence=" << capture.sequence
              << "\nframe=" << capture.start_frame + 1 << "\nobserved_draws=" << capture.seen
              << "\nrecorded_draws=" << capture.rows.size()
              << "\ntruncated=" << (capture.seen > capture.rows.size() ? "true" : "false")
@@ -74,34 +173,37 @@ void save_capture(reshade::api::effect_runtime *runtime, const dst_probe::Captur
              << "\ntexture_pixels=not_read\nvertex_data=not_read"
              << "\nframe_scope=one runtime present interval; other swap chains on same device may contribute\n";
         meta.close();
-        const std::string message = "DST Render Probe v0.3 [capture_saved] file=" + csv_path.u8string()
+        const std::string message = "DST Render Probe v0.4 [capture_saved] file=" + csv_path.u8string()
             + " observed=" + std::to_string(capture.seen) + " recorded=" + std::to_string(capture.rows.size())
             + " screenshot_requested=" + stem;
         reshade::log::message(reshade::log::level::info, message.c_str());
         runtime->save_screenshot(stem); // Confirmation comes only from reshade_screenshot, not this void call.
     } catch (const std::exception &error) {
-        const std::string message = std::string("DST Render Probe v0.3 [capture_save_failed] ") + error.what();
+        const std::string message = std::string("DST Render Probe v0.4 [capture_save_failed] ") + error.what();
         reshade::log::message(reshade::log::level::error, message.c_str());
     }
 }
 
 void on_screenshot(reshade::api::effect_runtime *, const char *path) {
-    const std::string message = std::string("DST Render Probe v0.3 [screenshot_saved] path=") + (path ? path : "unknown");
+    const std::string message = std::string("DST Render Probe v0.4 [screenshot_saved] path=") + (path ? path : "unknown");
     reshade::log::message(reshade::log::level::info, message.c_str());
 }
 void on_runtime_destroy(reshade::api::effect_runtime *runtime) {
     g_capture.cancel(runtime);
+    cancel_textures(runtime);
 }
 
 bool on_draw(reshade::api::command_list *commands, uint32_t count, uint32_t instances, uint32_t first, uint32_t first_instance) {
     uint32_t ordinal;
     const bool request = g_state.draw(GetTickCount64(), &ordinal);
+    collect_texture(commands, ordinal);
     capture_draw(commands, ordinal, false, count, instances, first, 0, first_instance, request);
     return request;
 }
 bool on_draw_indexed(reshade::api::command_list *commands, uint32_t count, uint32_t instances, uint32_t first, int32_t base, uint32_t first_instance) {
     uint32_t ordinal;
     const bool request = g_state.draw(GetTickCount64(), &ordinal);
+    collect_texture(commands, ordinal);
     capture_draw(commands, ordinal, true, count, instances, first, base, first_instance, request);
     return request;
 }
@@ -111,6 +213,7 @@ dst_probe::Input read_input() {
     DWORD process = 0;
     GetWindowThreadProcessId(GetForegroundWindow(), &process);
     input.foreground = process == GetCurrentProcessId();
+    if (GetAsyncKeyState(VK_F5) & 0x8000) input.keys |= dst_probe::F5;
     if (GetAsyncKeyState(VK_F6) & 0x8000) input.keys |= dst_probe::F6;
     // Use key-down state, not the unreliable global 'pressed since last call' bit.
     if (GetAsyncKeyState(VK_F7) & 0x8000) input.keys |= dst_probe::F7;
@@ -127,6 +230,11 @@ void on_reshade_present(reshade::api::effect_runtime *runtime) {
     const auto frame = g_state.finish_frame();
     const uint64_t now = GetTickCount64();
     const auto input = read_input();
+    if (!input.foreground || (input.keys & dst_probe::F11)) {
+        cancel_textures(runtime);
+    } else {
+        finish_textures(runtime);
+    }
     if (!input.foreground) {
         g_capture.cancel(runtime);
     } else if (const auto captured = g_capture.finish(runtime)) {
@@ -134,25 +242,37 @@ void on_reshade_present(reshade::api::effect_runtime *runtime) {
     }
     const char *reason = g_state.update(now, input, frame.draws);
     ++g_frame;
+    if (reason && std::string(reason) == "texture_request") {
+        g_capture.cancel(runtime);
+        const std::lock_guard<std::mutex> texture_lock(g_texture_mutex);
+        if (runtime && runtime->get_device()->get_api() == reshade::api::device_api::d3d9 && !g_texture_owner) {
+            g_candidates.clear(); g_texture_truncated = false; ++g_texture_sequence;
+            g_texture_owner = runtime; g_texture_device = runtime->get_device();
+            g_texture_active.store(true);
+            reshade::log::message(reshade::log::level::info, "DST Render Probe v0.4 [textures_armed]");
+        } else {
+            reshade::log::message(reshade::log::level::warning, "DST Render Probe v0.4 [textures_unavailable]");
+        }
+    }
     if (reason && std::string(reason) == "capture_request") {
         try {
             if (!runtime || runtime->get_device()->get_api() != reshade::api::device_api::d3d9) {
                 reshade::log::message(reshade::log::level::warning,
-                    "DST Render Probe v0.3 [capture_unsupported] metadata capture currently requires D3D9");
+                    "DST Render Probe v0.4 [capture_unsupported] metadata capture currently requires D3D9");
             } else {
                 const auto sequence = g_capture.arm(runtime, runtime->get_device(), g_frame);
-                const std::string message = "DST Render Probe v0.3 [capture_armed] sequence=" + std::to_string(sequence);
+                const std::string message = "DST Render Probe v0.4 [capture_armed] sequence=" + std::to_string(sequence);
                 reshade::log::message(reshade::log::level::info, message.c_str());
             }
         } catch (const std::exception &error) {
-            const std::string message = std::string("DST Render Probe v0.3 [capture_arm_failed] ") + error.what();
+            const std::string message = std::string("DST Render Probe v0.4 [capture_arm_failed] ") + error.what();
             reshade::log::message(reshade::log::level::error, message.c_str());
         }
     }
     if (reason || g_frame <= 3 || g_frame % 180 == 0) {
         char message[512];
         std::snprintf(message, sizeof(message),
-            "DST Render Probe v0.3 [%s] frame=%llu draws=%u target=%u skip=%s "
+            "DST Render Probe v0.4 [%s] frame=%llu draws=%u target=%u skip=%s "
             "counted_target=%u hits=%u skip_requests=%u burst_ms=%llu burst_requests=%llu",
             reason ? reason : "heartbeat", static_cast<unsigned long long>(g_frame),
             frame.draws, g_state.target(), g_state.single() ? "ON" : "OFF",
