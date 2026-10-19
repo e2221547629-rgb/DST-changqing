@@ -68,7 +68,7 @@ int main(int argc, char **argv) {
     REQUIRE(name != nullptr && std::strcmp(*name, "DST Render Probe") == 0);
     REQUIRE(GetProcAddress(module, "DESCRIPTION") != nullptr);
     const auto description = reinterpret_cast<const char **>(GetProcAddress(module, "DESCRIPTION"));
-    REQUIRE(std::strstr(*description, "v0.4") != nullptr);
+    REQUIRE(std::strstr(*description, "v0.5") != nullptr);
 
     using reshade::addon_event;
     const auto draw = reinterpret_cast<reshade::addon_event_traits<addon_event::draw>::decl>(

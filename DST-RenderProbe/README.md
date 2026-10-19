@@ -1,3 +1,23 @@
+# DST Render Probe v0.5
+
+Fix the observed v0.4 failure: two real F5 captures each found 12 DEFAULT-pool usage=0 DXT5 candidates, all rejecting LockRect with D3DERR_INVALIDCALL. F5 now tries direct BC3 readback, then renders the texture 1:1 with point sampling into a private non-MSAA A8R8G8B8 target and copies it to a SYSTEMMEM staging surface. Successful fallback outputs a top-origin 32-bit BGRA TGA, preserving alpha and premultiplied values. It does not unpremultiply, apply sRGB conversion, end/begin the caller's scene or render to the game's target.
+
+The helper captures D3DSBT_ALL, every supported MRT (up to four), depth surface, viewport and explicit sRGB states. It restores these before returning, including early-error paths. It reports method, direct/final HRESULT, restore HRESULT and failure stage in textures.csv. A restore error aborts the remaining capture. The operation is synchronous, bounded to 16 candidate textures, and may briefly stall or write up to 256 MiB of pixels. Default operation remains passive. Test only in an offline local world; exit before replacing the add-on and retain the previous package for rollback.
+
+F5 still filters slot 0 DXT5 at 2048x2048 or 1024x512; it is not exhaustive and a bound texture may be unused by the shader. F11/focus loss/runtime destruction cancel pending collection. F6 metadata capture remains available. This version adds no lighting or tree suppression.
+
+For exported TGA, compare full RGBA pixels against original locally decoded DDS atlases using:
+
+```text
+python scripts/match_texture_dump.py DUMP_DIR FINGERPRINT_JSON --reference-root LOCAL_EXTRACTED_ASSETS
+```
+
+Pillow is needed for this optional offline comparison, not for loading the add-on. Both vertical orientations are checked, including transparent RGB, with maximum channel error 2 to allow BC3 decoder rounding. The report distinguishes decoded-pixel matches from exact compressed-payload matches. Never compare the TGA's bytes to the compressed BC3 hash or use the unpremultiplied preview PNG as the original reference. Keep all game art local.
+
+Tests include a real HAL DEFAULT/usage=0 BC3 texture populated through UpdateTexture: direct lock rejection, offscreen pixels and four alpha levels, orientation, MRT/depth/stream/FVF/texture/viewport/scissor/render/sampler state restoration, early-abort cleanup, repeated use and scene ownership. A HAL-unavailable runner explicitly skips the readback test and records that in provenance. Passing this test is not proof of real DST compatibility; v0.5 needs the next F5 game experiment.
+
+The following sections document historical versions, not v0.5 validation.
+
 # DST Render Probe v0.4
 
 F5 exports up to 16 unique slot-0 DXT5 textures of size 2048x2048 or 1024x512 during one present interval. These dimensions cover the locally inspected evergreen atlases, but are not asset identification. The export is opt-in and defaults off. F5 cancels suppression; F11 or focus loss cancels a pending collection.

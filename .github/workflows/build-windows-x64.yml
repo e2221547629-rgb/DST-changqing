@@ -52,6 +52,9 @@ jobs:
           $native = $results.testsuite.testcase | Where-Object { $_.name -eq 'd3d9_capture_smoke' }
           if ($null -eq $native) { throw 'Native D3D9 test result is missing' }
           $nativeStatus = if ($null -ne $native.SelectSingleNode('skipped')) { 'skipped: no usable runner adapter' } else { 'passed' }
+          $readback = $results.testsuite.testcase | Where-Object { $_.name -eq 'd3d9_readback_tests' }
+          if ($null -eq $readback) { throw 'Pixel readback test result is missing' }
+          $readbackStatus = if ($null -ne $readback.SelectSingleNode('skipped')) { 'skipped: no HAL adapter' } else { 'passed' }
           $info = [ordered]@{
             repository = $env:GITHUB_REPOSITORY
             source_sha = $env:GITHUB_SHA
@@ -60,13 +63,14 @@ jobs:
             reshade_sdk_sha = '7d13ead8f630d045b9e7e2ac2ce18b2e7e5b25c3'
             reshade_api_version = 18
             architecture = 'AMD64'
-            probe_version = '0.4'
+            probe_version = '0.5'
             configuration = 'Release, static MSVC runtime'
             run_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
             simulated_host_test = 'passed'
             diagnostic_state_tests = 'passed'
             capture_buffer_tests = 'passed'
             native_d3d9_test = $nativeStatus
+            native_readback_test = $readbackStatus
             game_test = 'not performed'
           }
           $info | ConvertTo-Json | Set-Content -Encoding utf8 dist/build-info.json
