@@ -3,7 +3,7 @@
 #include <cstdint>
 
 namespace dst_probe {
-enum Key : uint32_t { F7 = 1, F8 = 2, F9 = 4, F10 = 8, F11 = 16 };
+enum Key : uint32_t { F7 = 1, F8 = 2, F9 = 4, F10 = 8, F11 = 16, F6 = 32 };
 struct Input { bool foreground = false; uint32_t keys = 0; bool shift = false; };
 struct Frame { uint32_t draws, hits, requests, counted_target; };
 
@@ -21,8 +21,9 @@ public:
     bool single() const { return single_.load(std::memory_order_relaxed); }
     uint64_t burst_until() const { return burst_until_.load(std::memory_order_relaxed); }
     uint64_t burst_requests() const { return burst_requests_.load(std::memory_order_relaxed); }
-    bool draw(uint64_t now) {
+    bool draw(uint64_t now, uint32_t *ordinal = nullptr) {
         const uint32_t index = draws_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ordinal) *ordinal = index;
         const bool hit = index == target();
         if (hit) hits_.fetch_add(1, std::memory_order_relaxed);
         const bool burst = now < burst_until();
@@ -52,6 +53,12 @@ public:
             burst_until_.store(0, std::memory_order_relaxed);
             repeat_key_ = 0;
             return "reset";
+        }
+        if (pressed & F6) {
+            single_.store(false, std::memory_order_relaxed);
+            burst_until_.store(0, std::memory_order_relaxed);
+            repeat_key_ = 0;
+            return "capture_request";
         }
         const char *reason = nullptr;
         if (burst_until() != 0 && now >= burst_until()) {

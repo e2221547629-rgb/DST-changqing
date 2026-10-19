@@ -1,5 +1,6 @@
 #include "../src/probe_state.hpp"
 #include <cstdio>
+#include <string>
 using namespace dst_probe;
 #define CHECK(condition) do { if (!(condition)) { \
     std::fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #condition); return 1; } } while (false)
@@ -57,6 +58,16 @@ int main() {
     state.update(1509, {true, F7}, 1000);
     state.update(1510, {true, F11}, 1000);
     CHECK(state.burst_until() == 0 && state.target() == 1 && !state.single());
+    state.update(1511, {true, 0}, 1000);
+    state.update(1512, {true, F7}, 1000);
+    CHECK(state.burst_until() != 0);
+    const char *capture_reason = state.update(1513, {true, F6 | F7}, 1000);
+    CHECK(capture_reason && std::string(capture_reason) == "capture_request");
+    CHECK(state.burst_until() == 0 && !state.single());
+    CHECK(!state.update(1514, {true, F6}, 1000)); // No repeated capture while held.
+    state.finish_frame();
+    uint32_t ordinal = 0;
+    CHECK(!state.draw(1515, &ordinal) && ordinal == 1);
     std::puts("PASS: hit/request counts, single suppression, held keys, repeat/Shift navigation, "
               "500 ms burst, expiry without present, focus loss, reset.");
     return 0;

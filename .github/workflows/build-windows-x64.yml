@@ -38,7 +38,7 @@ jobs:
       - name: Compile add-on and simulated host
         run: cmake --build build --config Release --parallel
       - name: Test DLL loading and passive callbacks (simulated host)
-        run: ctest --test-dir build -C Release --output-on-failure
+        run: ctest --test-dir build -C Release --output-on-failure --output-junit "$env:GITHUB_WORKSPACE/build/test-results.xml"
       - name: Verify PE architecture, exports and dependencies
         run: python DST-RenderProbe/scripts/verify_pe.py build/Release/DSTRenderProbe.addon64
       - name: Package with build provenance and SHA256
@@ -47,6 +47,11 @@ jobs:
           Copy-Item build/Release/DSTRenderProbe.addon64 dist/
           Copy-Item DST-RenderProbe/README.md dist/
           Copy-Item DST-RenderProbe/docs/AGENT_TASKS.md dist/
+          Copy-Item build/test-results.xml dist/
+          [xml]$results = Get-Content -Raw build/test-results.xml
+          $native = $results.testsuite.testcase | Where-Object { $_.name -eq 'd3d9_capture_smoke' }
+          if ($null -eq $native) { throw 'Native D3D9 test result is missing' }
+          $nativeStatus = if ($null -ne $native.SelectSingleNode('skipped')) { 'skipped: no usable runner adapter' } else { 'passed' }
           $info = [ordered]@{
             repository = $env:GITHUB_REPOSITORY
             source_sha = $env:GITHUB_SHA
@@ -55,11 +60,13 @@ jobs:
             reshade_sdk_sha = '7d13ead8f630d045b9e7e2ac2ce18b2e7e5b25c3'
             reshade_api_version = 18
             architecture = 'AMD64'
-            probe_version = '0.2'
+            probe_version = '0.3'
             configuration = 'Release, static MSVC runtime'
             run_url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
             simulated_host_test = 'passed'
             diagnostic_state_tests = 'passed'
+            capture_buffer_tests = 'passed'
+            native_d3d9_test = $nativeStatus
             game_test = 'not performed'
           }
           $info | ConvertTo-Json | Set-Content -Encoding utf8 dist/build-info.json

@@ -67,6 +67,8 @@ int main(int argc, char **argv) {
     const auto name = reinterpret_cast<const char **>(GetProcAddress(module, "NAME"));
     REQUIRE(name != nullptr && std::strcmp(*name, "DST Render Probe") == 0);
     REQUIRE(GetProcAddress(module, "DESCRIPTION") != nullptr);
+    const auto description = reinterpret_cast<const char **>(GetProcAddress(module, "DESCRIPTION"));
+    REQUIRE(std::strstr(*description, "v0.3") != nullptr);
 
     using reshade::addon_event;
     const auto draw = reinterpret_cast<reshade::addon_event_traits<addon_event::draw>::decl>(
@@ -87,7 +89,7 @@ int main(int argc, char **argv) {
     for (unsigned i = 3; i <= 180; ++i) present(nullptr);
     REQUIRE(messages.back().find("frame=180 draws=0 target=1 skip=OFF") != std::string::npos);
     REQUIRE(FreeLibrary(module));
-    REQUIRE(unregistrations == 1 && removals == 3 && !invalid_callback);
+    REQUIRE(unregistrations == 1 && removals == 5 && !invalid_callback);
     for (auto callback : callbacks) REQUIRE(callback == nullptr);
     std::puts("PASS: rejected registration, DLL load, API 18, metadata, passive draws, frame reset, heartbeat, unload.");
     return 0;
